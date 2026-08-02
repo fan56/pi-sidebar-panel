@@ -1,6 +1,6 @@
 {
   "name": "@aiwayds/pi-sidebar-panel",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "pi-coding-agent extension — right-side sidebar panel showing Todos, Sub-agents, LSP and MCP status",
   "keywords": [
     "pi-package",
