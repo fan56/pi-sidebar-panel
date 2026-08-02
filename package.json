@@ -1,14 +1,30 @@
 {
   "name": "@aiwayds/pi-sidebar-panel",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "pi-coding-agent extension — right-side sidebar panel showing Todos, Sub-agents, LSP and MCP status",
-  "keywords": ["pi-package", "pi-extension", "sidebar", "subagents", "todos", "tui"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "sidebar",
+    "subagents",
+    "todos",
+    "tui"
+  ],
   "license": "MIT",
   "author": "fan56",
   "main": "extensions/index.ts",
-  "files": ["extensions", "README.md", "LICENSE"],
-  "repository": { "type": "git", "url": "git+https://github.com/fan56/pi-sidebar-panel.git" },
-  "publishConfig": { "access": "public" },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fan56/pi-sidebar-panel.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
@@ -23,5 +39,7 @@
     "test": "node test/regression.mjs",
     "typecheck": "tsc --noEmit"
   },
-  "engines": { "node": ">=18" }
+  "engines": {
+    "node": ">=18"
+  }
 }
