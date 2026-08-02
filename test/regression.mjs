@@ -49,9 +49,11 @@ const theme = {
 };
 
 let capturedFactory = null;
+let capturedOpts = null;
 const uiStub = {
 	custom(factory, opts) {
 		capturedFactory = factory;
+		capturedOpts = opts;
 		if (opts?.onHandle) opts.onHandle({ hide() {}, unfocus() {}, focus() {} });
 	},
 	notify() {},
@@ -104,6 +106,29 @@ for (const cb of sessionStartHandlers) cb({}, makeCtx([]));
 check(
 	capturedFactory !== null,
 	"DEFAULT ON: startSidebar ran from session_start without any command",
+);
+
+// NARROW: overlay auto-hides below MIN_TERM_WIDTH_FOR_SIDEBAR (100) via the
+// `visible` callback in overlayOptions; only termWidth matters, not height.
+check(
+	capturedOpts !== null &&
+		typeof capturedOpts.overlayOptions?.visible === "function",
+	"NARROW: captured overlayOptions.visible callback",
+);
+const visible = capturedOpts?.overlayOptions?.visible || (() => true);
+check(visible(99) === false, "NARROW: visible(99) is false (below 100 hides)");
+check(visible(100) === true, "NARROW: visible(100) is true (at threshold shows)");
+check(
+	visible(101) === true && visible(160) === true,
+	"NARROW: visible(101) and visible(160) are true (wider shows)",
+);
+check(
+	visible(50, 200) === false,
+	"NARROW: visible(50, 200) is false (height ignored, width narrow)",
+);
+check(
+	visible(160, 1) === true,
+	"NARROW: visible(160, 1) is true (height ignored, width wide)",
 );
 
 // D1: events emitted before the sidebar rendered are shown done after render
@@ -343,6 +368,10 @@ check(
 	"static: no sidebarUnsubscribers / console.error / /ext",
 );
 check(src.includes("Sidebar Panel"), "static: contains 'Sidebar Panel'");
+check(
+	src.includes("MIN_TERM_WIDTH_FOR_SIDEBAR = 100"),
+	"static: contains 'MIN_TERM_WIDTH_FOR_SIDEBAR = 100'",
+);
 
 console.log(
 	failures === 0 ? "\nALL CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`,
