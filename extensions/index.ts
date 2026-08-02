@@ -580,7 +580,24 @@ function registerSidebar(pi: ExtensionAPI): void {
 		// reload re-open the full history). Only an explicit mid-session
 		// /sidebar on replays historical records.
 		activeAgents.clear();
+		// A session switch tears down the previous session's overlay (the framework
+		// detaches extension-drawn components), but this module's state survives
+		// in-process (jiti caches the same module instance). Reset the stale widget
+		// flag + dangling handles so the fresh session's startSidebar() is not
+		// blocked by the `if (sidebarWidgetActive) return;` guard.
+		resetSidebarState();
 		startSidebar(pi, ctx, { replay: false });
+	});
+
+	// Framework is about to tear down the session; stop the overlay while the
+	// handle is still alive. Idempotent: stopSidebar() null-checks every field.
+	pi.on("session_shutdown", async (_event, ctx) => {
+		try {
+			stopSidebar(ctx);
+		} catch {
+			// Dead handle from a previous teardown — pure state reset only.
+			resetSidebarState();
+		}
 	});
 
 	// Track sub-agents via pi-subagents EventBus events (authoritative lifecycle).
@@ -683,6 +700,18 @@ function startSidebar(
 			},
 		},
 	);
+}
+
+/** Pure state reset — never touches the (possibly dead) overlay handle. */
+function resetSidebarState(): void {
+	sidebarWidgetActive = false;
+	sidebarTui = null;
+	if (sidebarRefreshInterval) {
+		clearInterval(sidebarRefreshInterval);
+		sidebarRefreshInterval = null;
+	}
+	sidebarHandle = null;
+	sidebarDone = null;
 }
 
 function stopSidebar(ctx?: ExtensionContext): void {
