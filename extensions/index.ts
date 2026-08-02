@@ -573,7 +573,14 @@ class SidebarComponent implements Component {
 function registerSidebar(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		if (!sidebarEnabled) return;
-		startSidebar(pi, ctx);
+		// A fresh session must start with a clean sub-agent slate: the
+		// module-level activeAgents map survives in-process session switches,
+		// and replaying the branch here would resurrect every historical
+		// subagents:record from a resumed session (pi -c / continueRecent /
+		// reload re-open the full history). Only an explicit mid-session
+		// /sidebar on replays historical records.
+		activeAgents.clear();
+		startSidebar(pi, ctx, { replay: false });
 	});
 
 	// Track sub-agents via pi-subagents EventBus events (authoritative lifecycle).
@@ -622,7 +629,11 @@ function registerSidebar(pi: ExtensionAPI): void {
 	});
 }
 
-function startSidebar(pi: ExtensionAPI, ctx: ExtensionContext): void {
+function startSidebar(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	opts?: { replay?: boolean },
+): void {
 	if (ctx.mode !== "tui") return;
 	if (sidebarWidgetActive) return;
 
@@ -632,7 +643,9 @@ function startSidebar(pi: ExtensionAPI, ctx: ExtensionContext): void {
 	scanMcp(pi, cwd);
 	// Reconstruct agents that finished before the sidebar was enabled; live
 	// (still-running or already-tracked) entries in activeAgents take priority.
-	replayAgents(ctx.sessionManager!);
+	// Session start passes replay:false — historical records are only shown
+	// for an explicit mid-session /sidebar on, never at startup.
+	if (opts?.replay !== false) replayAgents(ctx.sessionManager!);
 
 	ctx.ui.custom(
 		(tui, theme, _keybindings, done) => {

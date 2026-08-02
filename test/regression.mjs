@@ -223,6 +223,41 @@ check(
 	"prune guard: replayed agent survives interval prune",
 );
 
+// session_start must NOT replay historical records (residual info fix): a
+// resumed session's branch carries every past subagents:record, so the
+// sidebar must start idle instead of resurrecting them. Place after the
+// prune-guard check so the D2 replayed agent assertions above still run
+// against the un-cleared map.
+//
+// NOTE: this must NOT be preceded by sidebarHandler("off") — that command
+// flips sidebarEnabled=false, which would make the session_start handler
+// below early-return before activeAgents.clear() AND would gate off the
+// tool_result→syncTodos path that the TTL todo tests after this depend on.
+const residualBranch = [
+	{
+		type: "custom",
+		customType: "subagents:record",
+		data: {
+			id: "residual-ghost",
+			type: "old-researcher",
+			status: "completed",
+			startedAt: Date.now() - 3_600_000,
+			completedAt: Date.now() - 3_000_000,
+		},
+	},
+];
+for (const cb of sessionStartHandlers) cb({}, makeCtx(residualBranch));
+component = null; // render a fresh component; activeAgents was cleared by session_start
+out = renderOnce();
+check(
+	!out.includes("old-researcher"),
+	"session_start: historical subagents:record NOT replayed (no residual info)",
+);
+check(
+	out.includes("(idle)"),
+	"session_start: sidebar starts idle (no residual sub-agent entries)",
+);
+
 // TTL eviction: drive pruneExpired with a fake clock (no real 60s wait)
 const pruneExpired = mod.pruneExpired;
 check(typeof pruneExpired === "function", "TTL: pruneExpired exported");
