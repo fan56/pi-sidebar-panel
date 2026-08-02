@@ -37,6 +37,10 @@ const DONE_TTL_MS = 60_000; // completed todos / done agents auto-clear after 60
 // start. Control with /sidebar [on|off|status].
 let sidebarEnabled = true;
 
+// Hide the sidebar when the terminal is too narrow for it to coexist with
+// the main chat pane (38-col panel + ~62-col minimum main pane).
+const MIN_TERM_WIDTH_FOR_SIDEBAR = 100;
+
 // ── Todo ──
 
 interface TodoTask {
@@ -693,6 +697,10 @@ function startSidebar(
 				offsetY: 1,
 				width: 38,
 				nonCapturing: true,
+				// Responsive hide: framework re-evaluates `visible` on every render /
+				// terminal resize; when false the overlay is not drawn and does not
+				// capture focus, so the sidebar never crowds a narrow terminal.
+				visible: (termWidth) => termWidth >= MIN_TERM_WIDTH_FOR_SIDEBAR,
 			},
 			onHandle: (handle) => {
 				sidebarHandle = handle;
