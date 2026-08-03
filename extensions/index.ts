@@ -22,7 +22,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Component, OverlayHandle, TUI } from "@earendil-works/pi-tui";
 import { truncateToWidth } from "@earendil-works/pi-tui";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { existsSync, accessSync, readFileSync } from "node:fs";
@@ -73,7 +72,8 @@ function recordTodoCompletionTimes(tasks: TodoTask[], now = Date.now()): void {
 			sweptTodoIds.delete(t.id);
 		}
 	}
-	for (const [id] of todoCompletedMs) if (!seen.has(id)) todoCompletedMs.delete(id);
+	for (const [id] of todoCompletedMs)
+		if (!seen.has(id)) todoCompletedMs.delete(id);
 }
 
 function replayTodos(sessionManager: { getBranch(): Iterable<unknown> }): void {
@@ -357,7 +357,16 @@ let sidebarRefreshInterval: ReturnType<typeof setInterval> | null = null;
 let sidebarDone: (() => void) | null = null;
 let sidebarWidgetActive = false;
 let sidebarTui: TUI | null = null; // stored for stopSidebar() cleanup
-let sidebarListenersRegistered = false;
+// v4: once-per-process startup clear — see the requestRender(true) call in
+// the overlay factory below. In-process session switches must not re-clear.
+let didStartupClear = false;
+// Unsubscribe fns for the sub-agent EventBus listeners bound to the CURRENT
+// session's bus. pi's EventBus is per-ResourceLoader (each /new, /resume,
+// /continue -c, fork — and the auto-resume at startup — makes a fresh bus and
+// re-runs this factory), so we re-bind on every factory invocation and drain
+// the previous bus's listeners first. jiti caches this module across in-process
+// session switches, which is exactly why the array must persist and be drained.
+let agentEventUnsubs: Array<() => void> = [];
 
 class SidebarComponent implements Component {
 	private tui: TUI;
@@ -385,6 +394,18 @@ class SidebarComponent implements Component {
 		const innerW = Math.max(1, width - 2);
 		const padLine = (s: string) => truncateToWidth(s, innerW, "...", true);
 		const border = (c: string) => th.fg("border", c);
+		// Fixed row counts per section: pi-tui's line-diff leaves ghost rows when
+		// an overlay's height changes (clearOnShrink is disabled while overlays
+		// exist), so the sidebar must render at a constant height. Every section
+		// is padded to its fixed count so the overlay never shifts rows.
+		const FIXED_TODO_ROWS = 5;
+		const FIXED_LSP_ROWS = 3;
+		const FIXED_MCP_ROWS = 3;
+		const entry = (s: string) => border("│") + padLine(s) + border("│");
+		const padRows = (rows: string[], n: number) => {
+			while (rows.length < n) rows.push(entry(" "));
+			return rows;
+		};
 		const lines: string[] = [];
 
 		// Title bar
@@ -403,14 +424,11 @@ class SidebarComponent implements Component {
 		lines.push(
 			border("\u2502") + padLine(th.fg("accent", " Todos")) + border("\u2502"),
 		);
+		const todoRows: string[] = [];
 		if (visible.length === 0) {
-			lines.push(
-				border("\u2502") +
-					padLine(th.fg("dim", "   (empty)")) +
-					border("\u2502"),
-			);
+			todoRows.push(entry(th.fg("dim", "   (empty)")));
 		} else {
-			for (const t of visible.slice(0, 5)) {
+			for (const t of visible.slice(0, FIXED_TODO_ROWS)) {
 				// Completed todos disappear once past DONE_TTL_MS even if a later
 				// snapshot re-includes them before the interval sweeps.
 				if (t.status === "completed") {
@@ -419,10 +437,10 @@ class SidebarComponent implements Component {
 				}
 				const icon =
 					t.status === "in_progress"
-						? th.fg("accent", "\u25cf")
+						? th.fg("accent", "●")
 						: t.status === "pending"
-							? th.fg("dim", "\u25cb")
-							: th.fg("success", "\u2713");
+							? th.fg("dim", "○")
+							: th.fg("success", "✓");
 				const id =
 					t.status !== "completed"
 						? th.fg("accent", `#${t.id} `)
@@ -439,17 +457,14 @@ class SidebarComponent implements Component {
 								),
 							)
 						: truncateToWidth(t.activeForm || t.subject, 30);
-				lines.push(
-					border("\u2502") +
-						padLine(` ${icon} ${id}${todoText}`) +
-						border("\u2502"),
-				);
+				todoRows.push(entry(` ${icon} ${id}${todoText}`));
 			}
 		}
+		lines.push(...padRows(todoRows, FIXED_TODO_ROWS));
 		lines.push(
-			border("\u2502") +
-				padLine(th.fg("border", "\u2500".repeat(innerW - 2))) +
-				border("\u2502"),
+			border("│") +
+				padLine(th.fg("border", "─".repeat(innerW - 2))) +
+				border("│"),
 		);
 
 		// Sub-agents
@@ -465,16 +480,13 @@ class SidebarComponent implements Component {
 			shown.push(...recent.slice(-(MAX_AGENT_ENTRIES - shown.length)));
 		}
 		lines.push(
-			border("\u2502") +
+			border("│") +
 				padLine(th.fg("accent", ` Sub-agents (${activeAgents.size})`)) +
-				border("\u2502"),
+				border("│"),
 		);
+		const agentRows: string[] = [];
 		if (running.length === 0 && recent.length === 0) {
-			lines.push(
-				border("\u2502") +
-					padLine(th.fg("dim", "   (idle)")) +
-					border("\u2502"),
-			);
+			agentRows.push(entry(th.fg("dim", "   (idle)")));
 		} else {
 			for (const a of shown) {
 				const icon =
@@ -484,8 +496,8 @@ class SidebarComponent implements Component {
 								SPINNER[Math.floor(Date.now() / 100) % SPINNER.length],
 							)
 						: a.status === "done"
-							? th.fg("success", "\u2713")
-							: th.fg("error", "\u2717");
+							? th.fg("success", "✓")
+							: th.fg("error", "✗");
 				const endMs =
 					a.status === "running" ? Date.now() : (a.endMs ?? a.startMs);
 				const elapsed = Math.round((endMs - a.startMs) / 1000);
@@ -500,69 +512,50 @@ class SidebarComponent implements Component {
 								),
 							)
 						: `${truncateToWidth(a.name, 26)} (${elapsed}s)`;
-				lines.push(
-					border("\u2502") +
-						padLine(` ${icon} ${agentText}`) +
-						border("\u2502"),
-				);
+				agentRows.push(entry(` ${icon} ${agentText}`));
 			}
 		}
+		lines.push(...padRows(agentRows, MAX_AGENT_ENTRIES));
 		lines.push(
-			border("\u2502") +
-				padLine(th.fg("border", "\u2500".repeat(innerW - 2))) +
-				border("\u2502"),
+			border("│") +
+				padLine(th.fg("border", "─".repeat(innerW - 2))) +
+				border("│"),
 		);
 
 		// LSP
-		lines.push(
-			border("\u2502") + padLine(th.fg("accent", " LSP")) + border("\u2502"),
-		);
+		lines.push(border("│") + padLine(th.fg("accent", " LSP")) + border("│"));
+		const lspRows: string[] = [];
 		if (lspEntries.length === 0) {
-			lines.push(
-				border("\u2502") +
-					padLine(th.fg("dim", "   (no config)")) +
-					border("\u2502"),
-			);
+			lspRows.push(entry(th.fg("dim", "   (no config)")));
 		} else {
-			for (const e of lspEntries) {
-				const s = e.available
-					? th.fg("success", "\u2713")
-					: th.fg("warning", "!");
-				lines.push(
-					border("\u2502") + padLine(` ${s} ${e.name}`) + border("\u2502"),
-				);
+			for (const e of lspEntries.slice(0, FIXED_LSP_ROWS)) {
+				const s = e.available ? th.fg("success", "✓") : th.fg("warning", "!");
+				lspRows.push(entry(` ${s} ${e.name}`));
 			}
 		}
+		lines.push(...padRows(lspRows, FIXED_LSP_ROWS));
 		lines.push(
-			border("\u2502") +
-				padLine(th.fg("border", "\u2500".repeat(innerW - 2))) +
-				border("\u2502"),
+			border("│") +
+				padLine(th.fg("border", "─".repeat(innerW - 2))) +
+				border("│"),
 		);
 
 		// MCP
-		lines.push(
-			border("\u2502") + padLine(th.fg("accent", " MCP")) + border("\u2502"),
-		);
+		lines.push(border("│") + padLine(th.fg("accent", " MCP")) + border("│"));
+		const mcpRows: string[] = [];
 		if (mcpEntries.length === 0) {
-			lines.push(
-				border("\u2502") +
-					padLine(th.fg("dim", "   (no config)")) +
-					border("\u2502"),
-			);
+			mcpRows.push(entry(th.fg("dim", "   (no config)")));
 		} else {
-			for (const e of mcpEntries) {
-				const s = e.running
-					? th.fg("success", "\u25b6")
-					: th.fg("dim", "\u25a0");
-				lines.push(
-					border("\u2502") + padLine(` ${s} ${e.name}`) + border("\u2502"),
-				);
+			for (const e of mcpEntries.slice(0, FIXED_MCP_ROWS)) {
+				const s = e.running ? th.fg("success", "▶") : th.fg("dim", "■");
+				mcpRows.push(entry(` ${s} ${e.name}`));
 			}
 		}
+		lines.push(...padRows(mcpRows, FIXED_MCP_ROWS));
 		lines.push(
-			border("\u2502") +
-				padLine(th.fg("border", "\u2500".repeat(innerW - 2))) +
-				border("\u2502"),
+			border("│") +
+				padLine(th.fg("border", "─".repeat(innerW - 2))) +
+				border("│"),
 		);
 
 		// Bottom border
@@ -576,6 +569,53 @@ class SidebarComponent implements Component {
 
 function registerSidebar(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
+		// CRITICAL: extensions also load into sub-agent sessions (ctx.mode
+		// "print"). Their session_start fires right after subagents:started and
+		// must NOT touch the shared module state: clearing activeAgents there
+		// would wipe live tracking at the exact moment agents spawn, and
+		// resetSidebarState() would null the TUI overlay's handle + kill its
+		// refresh interval — freezing the panel and leaving /sidebar off unable
+		// to hide it (observed in sidebar-debug.log: widgetActive=false +
+		// hasHandle=false while the zombie overlay stayed on screen).
+		if (ctx?.mode !== "tui") return;
+
+		// Re-bind the sub-agent EventBus listeners HERE (not at factory time):
+		// the factory also runs for every sub-agent session, and binding there
+		// let a sub-agent session drain the main TUI bus's listeners and steal
+		// them onto its own bus — after which subagents:completed on the main
+		// bus was never heard. Only real sessions fire a tui session_start, so
+		// the listeners always stay on the user-facing session's bus.
+		agentEventUnsubs.forEach((fn) => {
+			try {
+				fn();
+			} catch {
+				// Listener attached to an already-torn-down bus — safe to ignore.
+			}
+		});
+		// SDK 0.83.0 types EventBus handlers as (data: unknown) => void; the
+		// payload shapes below come from the pi-subagents EventBus contract, so
+		// they are cast at the registration boundary (minimal version-skew fix).
+		agentEventUnsubs = [
+			pi.events.on("subagents:started", ((payload: {
+				id: string;
+				type?: string;
+				description?: string;
+			}) => {
+				onAgentStart(
+					payload.id,
+					payload.type || payload.description || "sub-agent",
+				);
+			}) as (data: unknown) => void),
+
+			pi.events.on("subagents:completed", ((payload: { id: string }) => {
+				onAgentEnd(payload.id, false);
+			}) as (data: unknown) => void),
+
+			pi.events.on("subagents:failed", ((payload: { id: string }) => {
+				onAgentEnd(payload.id, true);
+			}) as (data: unknown) => void),
+		];
+
 		if (!sidebarEnabled) return;
 		// A fresh session must start with a clean sub-agent slate: the
 		// module-level activeAgents map survives in-process session switches,
@@ -596,6 +636,9 @@ function registerSidebar(pi: ExtensionAPI): void {
 	// Framework is about to tear down the session; stop the overlay while the
 	// handle is still alive. Idempotent: stopSidebar() null-checks every field.
 	pi.on("session_shutdown", async (_event, ctx) => {
+		// Sub-agent sessions also fire session_shutdown; only a real TUI session
+		// teardown may stop the overlay.
+		if (ctx?.mode !== "tui") return;
 		try {
 			stopSidebar(ctx);
 		} catch {
@@ -604,42 +647,10 @@ function registerSidebar(pi: ExtensionAPI): void {
 		}
 	});
 
-	// Track sub-agents via pi-subagents EventBus events (authoritative lifecycle).
-	// tool_call/tool_result for "Agent" fire when the tool call returns, which is
-	// immediately for background agents — before the agent actually finishes.
-	// These listeners are registered ONCE for the process lifetime (jiti re-import
-	// returns the same module instance, so this guard is reliable) and stay
-	// registered across sidebar toggles: subagent tracking is continuous, so
-	// agents that start or finish while the sidebar is hidden are still captured
-	// and appear when it is re-enabled. Should pi ever clear its module cache on
-	// /reload while reusing the EventBus, duplicate registration is possible but
-	// harmless — the handlers are idempotent (dedupe + deterministic cap).
-	// pi.on handlers below are cleaned up by pi on reload, so they stay outside
-	// the guard.
-	if (!sidebarListenersRegistered) {
-		sidebarListenersRegistered = true;
-		// SDK 0.83.0 types EventBus handlers as (data: unknown) => void; the
-		// payload shapes below come from the pi-subagents EventBus contract, so
-		// they are cast at the registration boundary (minimal version-skew fix).
-		pi.events.on("subagents:started", ((payload: {
-			id: string;
-			type?: string;
-			description?: string;
-		}) => {
-			onAgentStart(
-				payload.id,
-				payload.type || payload.description || "sub-agent",
-			);
-		}) as (data: unknown) => void);
-
-		pi.events.on("subagents:completed", ((payload: { id: string }) => {
-			onAgentEnd(payload.id, false);
-		}) as (data: unknown) => void);
-
-		pi.events.on("subagents:failed", ((payload: { id: string }) => {
-			onAgentEnd(payload.id, true);
-		}) as (data: unknown) => void);
-	}
+	// The sub-agent EventBus listeners are registered in the session_start
+	// handler above (TUI sessions only), NOT here: the factory runs for every
+	// session — including each sub-agent's own "print" session — and binding
+	// here would let a sub-agent session steal the listeners off the main bus.
 
 	// Keep tool_result for todo sync only
 	pi.on("tool_result", async (event, _ctx) => {
@@ -675,6 +686,21 @@ function startSidebar(
 			// stopSidebar() calls it with no args — the result is irrelevant here.
 			sidebarDone = done as () => void;
 			sidebarTui = tui; // kept for stopSidebar() cleanup; renders driven by 5s interval
+			// v4 FIX (cross-process ghost): pi-tui's first frame is fullRender(false)
+			// — "assumes clean screen" (pi-tui dist/tui.js first-render path) — and
+			// TUI.stop() deliberately leaves content on exit, so a restarted pi
+			// inherits the previous process's screen; the line-diff only rewrites
+			// rows later renders touch, leaving a stale sidebar generation + old
+			// content next to the live panel (captured live in the user's Orca
+			// terminal). requestRender(true) resets the diff state, so the next
+			// frame runs fullRender(true): clear screen + repaint — the same
+			// mechanism pi itself uses after SIGCONT / external editor / /reload.
+			// Once per process: in-process /new or resume has valid diff state and
+			// no residue, so it must not wipe the user's scrollback.
+			if (!didStartupClear) {
+				didStartupClear = true;
+				tui.requestRender(true);
+			}
 			// OverlayHandle has NO refresh() method — only this setInterval-driven
 			// tui.requestRender() repaints the sidebar. doRender's line-diff makes
 			// idle cycles free (no terminal write when content is unchanged).

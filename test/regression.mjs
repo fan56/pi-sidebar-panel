@@ -81,8 +81,13 @@ check(
 	commands.has("sidebar") && !commands.has("ext") && !commands.has("think"),
 	"command 'sidebar' registered (not ext/think)",
 );
-const startedL = eventListeners.get("subagents:started") || [];
-check(startedL.length === 1, "started listener registered once");
+// Bus listeners are deferred to the TUI session_start: the factory also runs
+// for every sub-agent's own "print" session, which must never bind (and steal)
+// the main session's listeners.
+check(
+	(eventListeners.get("subagents:started") || []).length === 0,
+	"factory does NOT bind bus listeners (deferred to tui session_start)",
+);
 const emit = (ch, p) => {
 	for (const cb of eventListeners.get(ch) || []) cb(p);
 };
@@ -107,6 +112,10 @@ check(
 	capturedFactory !== null,
 	"DEFAULT ON: startSidebar ran from session_start without any command",
 );
+check(
+	(eventListeners.get("subagents:started") || []).length === 1,
+	"tui session_start binds the started listener exactly once",
+);
 
 // NARROW: overlay auto-hides below MIN_TERM_WIDTH_FOR_SIDEBAR (100) via the
 // `visible` callback in overlayOptions; only termWidth matters, not height.
@@ -117,7 +126,10 @@ check(
 );
 const visible = capturedOpts?.overlayOptions?.visible || (() => true);
 check(visible(99) === false, "NARROW: visible(99) is false (below 100 hides)");
-check(visible(100) === true, "NARROW: visible(100) is true (at threshold shows)");
+check(
+	visible(100) === true,
+	"NARROW: visible(100) is true (at threshold shows)",
+);
 check(
 	visible(101) === true && visible(160) === true,
 	"NARROW: visible(101) and visible(160) are true (wider shows)",
@@ -220,24 +232,24 @@ check(
 
 // STRK+DIM: completed todos render ~~...~~ + <dim> (same style as done agents)
 for (const cb of piOnHandlers.get("tool_result") || [])
-cb(
-	{
-toolName: "todo",
-details: {
-tasks: [
-{ id: 1, status: "in_progress", subject: "still working" },
-{ id: 2, status: "completed", subject: "done" },
-],
-},
-	},
-	{},
-);
+	cb(
+		{
+			toolName: "todo",
+			details: {
+				tasks: [
+					{ id: 1, status: "in_progress", subject: "still working" },
+					{ id: 2, status: "completed", subject: "done" },
+				],
+			},
+		},
+		{},
+	);
 out = renderOnce();
 const todoDoneLine =
-out.split("\n").find((l) => l.includes("done") && l.includes("~~")) || "";
+	out.split("\n").find((l) => l.includes("done") && l.includes("~~")) || "";
 check(
-todoDoneLine.includes("~~") && todoDoneLine.includes("<dim>"),
-`STRK+DIM: completed todo struck & dimmed [${todoDoneLine.trim()}]`,
+	todoDoneLine.includes("~~") && todoDoneLine.includes("<dim>"),
+	`STRK+DIM: completed todo struck & dimmed [${todoDoneLine.trim()}]`,
 );
 
 // prune guard: replayed agent survives a >5s wait (5s interval tick)
@@ -325,7 +337,8 @@ check(!out.includes("ttl-agent"), "TTL: done agent removed after 60s");
 
 // TTL resurrection: a swept completed todo must not re-arm on later snapshots
 const seedTodos = (tasks) => {
-	for (const cb of piOnHandlers.get("tool_result") || []) cb({ toolName: "todo", details: { tasks } }, {});
+	for (const cb of piOnHandlers.get("tool_result") || [])
+		cb({ toolName: "todo", details: { tasks } }, {});
 };
 seedTodos([
 	{ id: 5, status: "completed", subject: "resz" },
@@ -358,6 +371,104 @@ check(
 pruneExpired(Date.now() + 60_001);
 out = renderOnce();
 check(!out.includes("frsh"), "TTL: freshly completed todo (frsh) swept");
+
+// SESSION SWITCH (the core regression): pi's EventBus is per-ResourceLoader,
+// so every /new, /resume, /continue -c and fork (plus the auto-resume at
+// startup) makes a FRESH bus and re-runs the extension factory against it. The
+// sub-agent listeners must re-bind to the new bus at the new session's tui
+// session_start, or every sub-agent event after the first session switch is
+// dropped — exactly the "sidebar freezes until /sidebar toggle" symptom. jiti
+// returns the SAME cached module instance across in-process switches, so
+// module-level state (incl. the unsubscribe array) persists between factory
+// runs; simulate that by re-loading the same module with a brand-new pi/events
+// pair.
+const events2 = new Map();
+const pi2OnHandlers = new Map();
+const pi2 = {
+	events: {
+		on(channel, cb) {
+			if (!events2.has(channel)) events2.set(channel, []);
+			events2.get(channel).push(cb);
+			return () => {};
+		},
+		emit() {},
+	},
+	on(name, cb) {
+		if (!pi2OnHandlers.has(name)) pi2OnHandlers.set(name, []);
+		pi2OnHandlers.get(name).push(cb);
+	},
+	registerCommand() {},
+	async exec() {
+		return { stdout: "" };
+	},
+};
+loadDefault(pi2); // second factory invocation — session switch
+check(
+	(events2.get("subagents:started") || []).length === 0,
+	"SESSION SWITCH: factory re-run still does not bind bus listeners",
+);
+// The new session's tui session_start performs the re-bind:
+for (const cb of pi2OnHandlers.get("session_start") || []) cb({}, makeCtx([]));
+const emit2 = (ch, p) => {
+	for (const cb of events2.get(ch) || []) cb(p);
+};
+emit2("subagents:started", { id: "postswitch", type: "switch-agent" });
+emit2("subagents:completed", { id: "postswitch" });
+out = renderOnce();
+check(
+	out.includes("switch-agent"),
+	"SESSION SWITCH: sub-agent event on the NEW bus is tracked after session_start",
+);
+check(
+	(events2.get("subagents:started") || []).length === 1,
+	"SESSION SWITCH: listener bound to the new bus exactly once",
+);
+
+// SUBAGENT SESSION ISOLATION (the second regression, observed live in
+// sidebar-debug.log): extensions ALSO load into every sub-agent's own session
+// (ctx.mode "print"). That factory run + print session_start must NOT clear
+// activeAgents, must NOT reset the TUI overlay state, and must NOT steal the
+// main session's bus listeners.
+const events3 = new Map();
+const pi3OnHandlers = new Map();
+const pi3 = {
+	events: {
+		on(channel, cb) {
+			if (!events3.has(channel)) events3.set(channel, []);
+			events3.get(channel).push(cb);
+			return () => {};
+		},
+		emit() {},
+	},
+	on(name, cb) {
+		if (!pi3OnHandlers.has(name)) pi3OnHandlers.set(name, []);
+		pi3OnHandlers.get(name).push(cb);
+	},
+	registerCommand() {},
+	async exec() {
+		return { stdout: "" };
+	},
+};
+loadDefault(pi3); // the sub-agent session's own factory run
+for (const cb of pi3OnHandlers.get("session_start") || [])
+	cb({}, { ...makeCtx([]), mode: "print" });
+out = renderOnce();
+check(
+	out.includes("switch-agent"),
+	"ISOLATION: print session_start does NOT clear tracked agents",
+);
+check(
+	(events3.get("subagents:started") || []).length === 0,
+	"ISOLATION: print session never binds listeners onto the sub-agent bus",
+);
+// The main bus must still hear lifecycle events after a print session ran:
+emit2("subagents:started", { id: "isolive", type: "live-agent" });
+emit2("subagents:completed", { id: "isolive" });
+out = renderOnce();
+check(
+	out.includes("live-agent"),
+	"ISOLATION: main bus listeners survive sub-agent sessions (completion tracked)",
+);
 
 // static source checks
 const src = readFileSync(join(here, "../extensions/index.ts"), "utf8");
