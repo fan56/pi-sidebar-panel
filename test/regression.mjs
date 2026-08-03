@@ -470,6 +470,54 @@ check(
 	"ISOLATION: main bus listeners survive sub-agent sessions (completion tracked)",
 );
 
+// COMPOSITION (the screenshot bug class): sub-agent rows must NEVER render
+// inside the LSP or MCP section, and every section header must appear exactly
+// once per frame. render() rebuilds its line list from scratch every call and
+// pads each section to a fixed count, so a single frame can't duplicate headers
+// or leak agent rows — but the old variable-height code did, and pi-tui's
+// line-diff then left those stale rows on screen as "agents under MCP". These
+// assertions lock the fixed-composition invariant so it can't silently regress.
+emit("subagents:started", { id: "p1", type: "placement-agent" });
+emit("subagents:started", { id: "p2", type: "placement-agent" });
+emit("subagents:started", { id: "p3", type: "placement-agent" });
+out = renderOnce();
+const compLines = out.split("\n");
+const subHdrIdx = compLines.findIndex((l) => /Sub-agents \(/.test(l));
+const lspHdrIdx = compLines.findIndex((l) => /\u2502 LSP/.test(l));
+const mcpHdrIdx = compLines.findIndex((l) => /\u2502 MCP/.test(l));
+const placementIdxs = compLines
+	.map((l, i) => (/placement-agent/.test(l) ? i : -1))
+	.filter((i) => i >= 0);
+check(
+	(out.match(/Sub-agents \(/g) || []).length === 1,
+	"COMPOSITION: Sub-agents header renders exactly once per frame",
+);
+check(
+	compLines.filter((l) => /\u2502 LSP/.test(l)).length === 1,
+	"COMPOSITION: LSP header renders exactly once per frame",
+);
+check(
+	compLines.filter((l) => /\u2502 MCP/.test(l)).length === 1,
+	"COMPOSITION: MCP header renders exactly once per frame",
+);
+check(
+	subHdrIdx > -1 && lspHdrIdx > subHdrIdx && mcpHdrIdx > lspHdrIdx,
+	"COMPOSITION: section order is Sub-agents < LSP < MCP",
+);
+check(
+	placementIdxs.length === 3 &&
+		placementIdxs.every((i) => i > subHdrIdx && i < lspHdrIdx),
+	"COMPOSITION: all sub-agent rows sit inside the Sub-agents section, never under LSP/MCP",
+);
+check(
+	placementIdxs.every((i) => i < lspHdrIdx),
+	"COMPOSITION: zero sub-agent rows leak below the LSP header",
+);
+check(
+	renderOnce().split("\n").length === renderOnce().split("\n").length,
+	"COMPOSITION: rendered height is constant across renders",
+);
+
 // static source checks
 const src = readFileSync(join(here, "../extensions/index.ts"), "utf8");
 check(
