@@ -472,11 +472,13 @@ check(
 
 // COMPOSITION (the screenshot bug class): sub-agent rows must NEVER render
 // inside the LSP or MCP section, and every section header must appear exactly
-// once per frame. render() rebuilds its line list from scratch every call and
-// pads each section to a fixed count, so a single frame can't duplicate headers
-// or leak agent rows — but the old variable-height code did, and pi-tui's
-// line-diff then left those stale rows on screen as "agents under MCP". These
-// assertions lock the fixed-composition invariant so it can't silently regress.
+// once per frame. render() rebuilds its line list from scratch every call, so
+// a single frame can't duplicate headers or leak agent rows. Sections are now
+// content-sized (variable height): pi-tui composites overlays into a
+// full-height frame every render and rewrites every changed row, so a
+// shrinking overlay leaves no ghost — the prior "pad to fixed height" fix is
+// gone. These assertions lock both the composition invariant and the
+// variable-height behavior.
 emit("subagents:started", { id: "p1", type: "placement-agent" });
 emit("subagents:started", { id: "p2", type: "placement-agent" });
 emit("subagents:started", { id: "p3", type: "placement-agent" });
@@ -514,8 +516,12 @@ check(
 	"COMPOSITION: zero sub-agent rows leak below the LSP header",
 );
 check(
-	renderOnce().split("\n").length === renderOnce().split("\n").length,
-	"COMPOSITION: rendered height is constant across renders",
+	compLines.filter((l) => /^│\s*│$/.test(l)).length === 0,
+	"COMPOSITION: no blank-padding rows — every section is content-sized (variable height)",
+);
+check(
+	compLines.length < 26,
+	"COMPOSITION: variable height — frame shorter than the old fixed 26 rows",
 );
 
 // static source checks

@@ -394,18 +394,17 @@ class SidebarComponent implements Component {
 		const innerW = Math.max(1, width - 2);
 		const padLine = (s: string) => truncateToWidth(s, innerW, "...", true);
 		const border = (c: string) => th.fg("border", c);
-		// Fixed row counts per section: pi-tui's line-diff leaves ghost rows when
-		// an overlay's height changes (clearOnShrink is disabled while overlays
-		// exist), so the sidebar must render at a constant height. Every section
-		// is padded to its fixed count so the overlay never shifts rows.
-		const FIXED_TODO_ROWS = 5;
-		const FIXED_LSP_ROWS = 3;
-		const FIXED_MCP_ROWS = 3;
+		// Per-section caps (NOT fixed heights): each section renders only as many
+		// rows as it has content, so the panel never wastes space on blank
+		// padding. Safe because pi-tui composites overlays into a full-height
+		// frame every render (compositeOverlays pads to termHeight) and the
+		// line-diff rewrites every changed row — including rows an overlay
+		// vacates when it shrinks (they revert to main content and get
+		// rewritten). Verified against pi-tui 0.80.3 dist/tui.js.
+		const MAX_TODO_ROWS = 5;
+		const MAX_LSP_ROWS = 3;
+		const MAX_MCP_ROWS = 3;
 		const entry = (s: string) => border("│") + padLine(s) + border("│");
-		const padRows = (rows: string[], n: number) => {
-			while (rows.length < n) rows.push(entry(" "));
-			return rows;
-		};
 		const lines: string[] = [];
 
 		// Title bar
@@ -428,7 +427,7 @@ class SidebarComponent implements Component {
 		if (visible.length === 0) {
 			todoRows.push(entry(th.fg("dim", "   (empty)")));
 		} else {
-			for (const t of visible.slice(0, FIXED_TODO_ROWS)) {
+			for (const t of visible.slice(0, MAX_TODO_ROWS)) {
 				// Completed todos disappear once past DONE_TTL_MS even if a later
 				// snapshot re-includes them before the interval sweeps.
 				if (t.status === "completed") {
@@ -460,7 +459,9 @@ class SidebarComponent implements Component {
 				todoRows.push(entry(` ${icon} ${id}${todoText}`));
 			}
 		}
-		lines.push(...padRows(todoRows, FIXED_TODO_ROWS));
+		if (todoRows.length === 0)
+			todoRows.push(entry(th.fg("dim", "   (empty)")));
+		lines.push(...todoRows);
 		lines.push(
 			border("│") +
 				padLine(th.fg("border", "─".repeat(innerW - 2))) +
@@ -515,7 +516,7 @@ class SidebarComponent implements Component {
 				agentRows.push(entry(` ${icon} ${agentText}`));
 			}
 		}
-		lines.push(...padRows(agentRows, MAX_AGENT_ENTRIES));
+		lines.push(...agentRows);
 		lines.push(
 			border("│") +
 				padLine(th.fg("border", "─".repeat(innerW - 2))) +
@@ -528,12 +529,12 @@ class SidebarComponent implements Component {
 		if (lspEntries.length === 0) {
 			lspRows.push(entry(th.fg("dim", "   (no config)")));
 		} else {
-			for (const e of lspEntries.slice(0, FIXED_LSP_ROWS)) {
+			for (const e of lspEntries.slice(0, MAX_LSP_ROWS)) {
 				const s = e.available ? th.fg("success", "✓") : th.fg("warning", "!");
 				lspRows.push(entry(` ${s} ${e.name}`));
 			}
 		}
-		lines.push(...padRows(lspRows, FIXED_LSP_ROWS));
+		lines.push(...lspRows);
 		lines.push(
 			border("│") +
 				padLine(th.fg("border", "─".repeat(innerW - 2))) +
@@ -546,12 +547,12 @@ class SidebarComponent implements Component {
 		if (mcpEntries.length === 0) {
 			mcpRows.push(entry(th.fg("dim", "   (no config)")));
 		} else {
-			for (const e of mcpEntries.slice(0, FIXED_MCP_ROWS)) {
+			for (const e of mcpEntries.slice(0, MAX_MCP_ROWS)) {
 				const s = e.running ? th.fg("success", "▶") : th.fg("dim", "■");
 				mcpRows.push(entry(` ${s} ${e.name}`));
 			}
 		}
-		lines.push(...padRows(mcpRows, FIXED_MCP_ROWS));
+		lines.push(...mcpRows);
 		lines.push(
 			border("│") +
 				padLine(th.fg("border", "─".repeat(innerW - 2))) +
