@@ -6,7 +6,7 @@
  * the combined pi-ext-fan extension; this package contains only the sidebar
  * feature.
  *
- * The panel auto-starts at session start (default ON). Control it with:
+ * The panel is OFF by default; enable it with /sidebar on. Control it with:
  *   /sidebar          — toggle on/off
  *   /sidebar on       — enable
  *   /sidebar off      — disable
@@ -32,9 +32,9 @@ const DONE_TTL_MS = 60_000; // completed todos / done agents auto-clear after 60
 // Sidebar state
 // ═══════════════════════════════════════════════════════════════════
 
-// The only module-level toggle: default ON — the panel auto-shows at session
-// start. Control with /sidebar [on|off|status].
-let sidebarEnabled = true;
+// The only module-level toggle: default OFF — the panel stays hidden until
+// explicitly enabled. Control with /sidebar [on|off|status].
+let sidebarEnabled = false;
 
 // Hide the sidebar when the terminal is too narrow for it to coexist with
 // the main chat pane (38-col panel + ~62-col minimum main pane).
@@ -459,8 +459,7 @@ class SidebarComponent implements Component {
 				todoRows.push(entry(` ${icon} ${id}${todoText}`));
 			}
 		}
-		if (todoRows.length === 0)
-			todoRows.push(entry(th.fg("dim", "   (empty)")));
+		if (todoRows.length === 0) todoRows.push(entry(th.fg("dim", "   (empty)")));
 		lines.push(...todoRows);
 		lines.push(
 			border("│") +
