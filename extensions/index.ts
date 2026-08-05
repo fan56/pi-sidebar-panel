@@ -40,6 +40,36 @@ let sidebarEnabled = false;
 // the main chat pane (38-col panel + ~62-col minimum main pane).
 const MIN_TERM_WIDTH_FOR_SIDEBAR = 100;
 
+// Rendered panel width (cols). Kept as a constant so the shared layout
+// registry below stays in sync with the actual overlayOptions.width.
+const SIDEBAR_WIDTH = 38;
+
+// Shared layout registry — published on globalThis (NOT a file or module
+// import): sibling extensions (pi-think-panel) and this module are all jiti
+// modules in the same process, and jiti evaluates in the shared global
+// realm, so a global key is visible to any extension without either one
+// depending on the other's path or version. If this extension is absent, the
+// key is simply missing and consumers fall back to no adjustment.
+const SIDEBAR_LAYOUT_KEY = "__piSidebarLayout";
+
+interface SidebarLayout {
+	enabled: boolean; // /sidebar on state (persists across sessions)
+	width: number; // rendered panel width in cols
+	minWidth: number; // terminal cols below which the sidebar is not drawn
+}
+
+/** Publish current layout so sibling extensions can avoid overlapping us. */
+function publishSidebarLayout(): void {
+	(globalThis as Record<string, unknown>)[SIDEBAR_LAYOUT_KEY] = {
+		enabled: sidebarEnabled,
+		width: SIDEBAR_WIDTH,
+		minWidth: MIN_TERM_WIDTH_FOR_SIDEBAR,
+	} satisfies SidebarLayout;
+}
+
+// Initial publish (module load, once per process).
+publishSidebarLayout();
+
 // ── Todo ──
 
 interface TodoTask {
@@ -579,6 +609,11 @@ function registerSidebar(pi: ExtensionAPI): void {
 		// hasHandle=false while the zombie overlay stayed on screen).
 		if (ctx?.mode !== "tui") return;
 
+		// Fresh session — re-publish the layout registry so sibling extensions
+		// (pi-think-panel) pick up the current toggle state (it persists across
+		// sessions in this module, so this is a refresh, not a reset).
+		publishSidebarLayout();
+
 		// Re-bind the sub-agent EventBus listeners HERE (not at factory time):
 		// the factory also runs for every sub-agent session, and binding there
 		// let a sub-agent session drain the main TUI bus's listeners and steal
@@ -721,7 +756,7 @@ function startSidebar(
 				anchor: "top-right",
 				offsetX: -1,
 				offsetY: 1,
-				width: 38,
+				width: SIDEBAR_WIDTH,
 				nonCapturing: true,
 				// Responsive hide: framework re-evaluates `visible` on every render /
 				// terminal resize; when false the overlay is not drawn and does not
@@ -791,6 +826,7 @@ function registerSidebarCommand(pi: ExtensionAPI): void {
 
 			if (trimmed === "on") {
 				sidebarEnabled = true;
+				publishSidebarLayout();
 				startSidebar(pi, ctx);
 				notify("Sidebar: enabled", "success");
 				return;
@@ -798,6 +834,7 @@ function registerSidebarCommand(pi: ExtensionAPI): void {
 
 			if (trimmed === "off") {
 				sidebarEnabled = false;
+				publishSidebarLayout();
 				stopSidebar(ctx);
 				notify("Sidebar: disabled", "warning");
 				return;
@@ -806,6 +843,7 @@ function registerSidebarCommand(pi: ExtensionAPI): void {
 			if (trimmed === "" || trimmed === "toggle") {
 				const newVal = !sidebarEnabled;
 				sidebarEnabled = newVal;
+				publishSidebarLayout();
 				if (newVal) startSidebar(pi, ctx);
 				else stopSidebar(ctx);
 				notify(
