@@ -173,6 +173,73 @@ const SPINNER = [
 	"\u280f",
 ];
 
+// ── Agent display names ──
+
+// Agent definitions in ~/.pi/agent/agents/<type>.md may declare a display_name
+// in their YAML frontmatter (e.g. `display_name: 老法师`); when present the
+// sidebar shows that name instead of the raw agent type. Values may be bare or
+// quoted. Reads are cached per type so rendering never re-reads the disk.
+const AGENTS_DIR = path.join(os.homedir(), ".pi", "agent", "agents");
+const displayNameCache = new Map<string, string | null>();
+
+/** Strip surrounding single/double quotes from a frontmatter scalar. */
+export function parseFrontmatterValue(raw: string): string {
+	const trimmed = raw.trim();
+	if (trimmed.length >= 2) {
+		const first = trimmed[0];
+		const last = trimmed[trimmed.length - 1];
+		if (
+			(first === '"' && last === '"') ||
+			(first === "'" && last === "'")
+		)
+			return trimmed.slice(1, -1);
+	}
+	return trimmed;
+}
+
+/** display_name from the agent definition's frontmatter, or null. Never throws. */
+export function getDisplayName(type: string): string | null {
+	// `type` comes from event payloads and feeds path.join below — reject any
+	// value that could escape AGENTS_DIR (e.g. "../x") before it reaches disk.
+	if (!type || !/^[\w][\w.-]*$/.test(type)) return null;
+	if (displayNameCache.has(type)) return displayNameCache.get(type) ?? null;
+	let display: string | null = null;
+	try {
+		const file = path.join(AGENTS_DIR, `${type}.md`);
+		if (existsSync(file)) {
+			const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(
+				readFileSync(file, "utf8"),
+			);
+			const line = match?.[1]
+				?.split(/\r?\n/)
+				.find((l) => /^display_name\s*:/.test(l.trim()));
+			if (line) {
+				const value = parseFrontmatterValue(
+					line.slice(line.indexOf(":") + 1),
+				);
+				if (value) display = value;
+			}
+		}
+	} catch {
+		// Unreadable/malformed agent file — fall back to the raw type.
+		display = null;
+	}
+	displayNameCache.set(type, display);
+	return display;
+}
+
+/**
+ * Name shown for an agent: display_name when declared, else the existing
+ * type → description → "sub-agent" chain (unchanged for agents without one).
+ */
+export function resolveAgentName(type?: string, description?: string): string {
+	if (type) {
+		const display = getDisplayName(type);
+		if (display) return display;
+	}
+	return type || description || "sub-agent";
+}
+
 function onAgentStart(id: string, name: string): void {
 	if (!id) return; // never store an anonymous entry (collides on key `undefined`)
 	if (activeAgents.has(id) && activeAgents.get(id)!.status === "running")
@@ -228,7 +295,7 @@ function replayAgents(sessionManager: {
 		const status = d.status === "completed" ? "done" : "error";
 		records.set(d.id, {
 			id: d.id,
-			name: d.type || d.description || "sub-agent",
+			name: resolveAgentName(d.type, d.description),
 			status,
 			startMs: d.startedAt ?? Date.now(),
 			endMs: d.completedAt,
@@ -638,7 +705,7 @@ function registerSidebar(pi: ExtensionAPI): void {
 			}) => {
 				onAgentStart(
 					payload.id,
-					payload.type || payload.description || "sub-agent",
+					resolveAgentName(payload.type, payload.description),
 				);
 			}) as (data: unknown) => void),
 

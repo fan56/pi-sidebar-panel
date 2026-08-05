@@ -4,8 +4,9 @@
 // static source checks.
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 const require = createRequire(import.meta.url);
 let createJiti;
@@ -104,18 +105,22 @@ const SPINNER = [
 	"\u280f",
 ];
 
-// DEFAULT ON: session_start alone must start the sidebar (no command first)
+// DEFAULT OFF (338328d): session_start alone must NOT start the sidebar —
+// the panel only shows after an explicit /sidebar on. The bus listeners still
+// bind at session start so tracking is continuous across toggles.
 const sessionStartHandlers = piOnHandlers.get("session_start") || [];
 check(sessionStartHandlers.length === 1, "session_start handler registered");
 for (const cb of sessionStartHandlers) cb({}, makeCtx([]));
 check(
-	capturedFactory !== null,
-	"DEFAULT ON: startSidebar ran from session_start without any command",
+	capturedFactory === null,
+	"DEFAULT OFF: session_start alone does NOT start the sidebar",
 );
 check(
 	(eventListeners.get("subagents:started") || []).length === 1,
 	"tui session_start binds the started listener exactly once",
 );
+// Start it explicitly so the render-based checks below have a component.
+commands.get("sidebar").handler("on", makeCtx([]));
 
 // NARROW: overlay auto-hides below MIN_TERM_WIDTH_FOR_SIDEBAR (100) via the
 // `visible` callback in overlayOptions; only termWidth matters, not height.
@@ -334,6 +339,74 @@ check(
 pruneExpired(Date.now() + 60_001);
 out = renderOnce();
 check(!out.includes("ttl-agent"), "TTL: done agent removed after 60s");
+
+// DISPLAY NAME: agent types whose definition (~/.pi/agent/agents/<type>.md)
+// declares a display_name show it instead of the raw type. Uses the dev
+// machine's agent files when present; skipped otherwise. Frontmatter parsing
+// and the fallback chain are covered by pure unit checks below regardless.
+const agentDefsDir = join(homedir(), ".pi", "agent", "agents");
+const haveAgentDefs = ["oldfox", "workhorse"].every((t) =>
+	existsSync(join(agentDefsDir, `${t}.md`)),
+);
+if (haveAgentDefs) {
+	emit("subagents:started", { id: "cn-oldfox", type: "oldfox" });
+	emit("subagents:started", { id: "cn-workhorse", type: "workhorse" });
+	out = renderOnce();
+	const foxLine = out.split("\n").find((l) => l.includes("老法师")) || "";
+	check(
+		foxLine.includes("老法师") && !foxLine.includes("oldfox"),
+		`DISPLAY: oldfox shows 老法师 not raw type [${foxLine.trim()}]`,
+	);
+	const horseLine = out.split("\n").find((l) => l.includes("牛马狗")) || "";
+	check(
+		horseLine.includes("牛马狗") && !horseLine.includes("workhorse"),
+		`DISPLAY: workhorse shows 牛马狗 not raw type [${horseLine.trim()}]`,
+	);
+	// Complete both so the later COMPOSITION checks still see exactly the 3
+	// running placement-agents it expects (MAX_AGENT_ENTRIES = 3).
+	emit("subagents:completed", { id: "cn-oldfox" });
+	emit("subagents:completed", { id: "cn-workhorse" });
+} else {
+	check(true, "DISPLAY: dev agent defs absent — display-name E2E skipped");
+}
+
+// DISPLAY unit: frontmatter value parsing + fallback chain (unknown types
+// keep the raw type/description behavior — no agent files involved).
+const parseFrontmatterValue = mod.parseFrontmatterValue;
+check(
+	typeof parseFrontmatterValue === "function",
+	"DISPLAY: parseFrontmatterValue exported",
+);
+check(
+	parseFrontmatterValue(" 老法师 ") === "老法师",
+	"DISPLAY: bare value trimmed",
+);
+check(
+	parseFrontmatterValue('"老法师"') === "老法师",
+	"DISPLAY: double-quoted value unquoted",
+);
+check(
+	parseFrontmatterValue("'牛马狗'") === "牛马狗",
+	"DISPLAY: single-quoted value unquoted",
+);
+check(parseFrontmatterValue("") === "", "DISPLAY: empty value stays empty");
+const resolveAgentName = mod.resolveAgentName;
+check(
+	typeof resolveAgentName === "function",
+	"DISPLAY: resolveAgentName exported",
+);
+check(
+	resolveAgentName("no-such-agent-def", "desc") === "no-such-agent-def",
+	"DISPLAY: unknown type keeps raw type",
+);
+check(
+	resolveAgentName("", "deep dive") === "deep dive",
+	"DISPLAY: empty type falls back to description",
+);
+check(
+	resolveAgentName("") === "sub-agent",
+	"DISPLAY: no type/description falls back to sub-agent",
+);
 
 // TTL resurrection: a swept completed todo must not re-arm on later snapshots
 const seedTodos = (tasks) => {
